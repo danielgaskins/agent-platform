@@ -886,8 +886,9 @@ components:  # @schema additionalProperties: true
     # with observability.metrics, the metrics port its ServiceMonitor scrapes
     # (giantswarm/agent-manager#76, giantswarm/giantswarm#36711). 1.7.0 takes
     # agentChart.semverFilter, which gitops.prereleases sets
-    # (giantswarm/agent-manager#86).
-    versionRange: ">=1.7.0 <2.0.0"
+    # (giantswarm/agent-manager#86). 1.11.0 takes kagent.controllerTarget, the
+    # kagent controller its session tools call (giantswarm/agent-manager#101).
+    versionRange: ">=1.11.0 <2.0.0"
     valuesFrom: agent-manager
     enabled: false
     # Creates a muster.giantswarm.io/MCPServer CR (CRD owned by the muster app)
