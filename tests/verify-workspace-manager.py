@@ -34,8 +34,10 @@ muster. Each case below pins one property of its wiring:
 - the Organizations (#886): workspaces.organizations [{name, memberGroups}] reaches
   the release as the chart's organizations map and moves nothing else; the
   component chart, rendered at the BOM's pin with the forwarded block, gives the
-  manager's ServiceAccount one Role and RoleBinding in kagent, nothing
-  cluster-wide and no binding of a member or group; a duplicate, groupless,
+  manager's ServiceAccount one Role and RoleBinding in kagent, cluster-wide only
+  `get` on PersistentVolumes (a workspace volume's CSI driver and handle, which
+  the grant names) and StorageClasses (whether the class provisions a size the
+  controller grows) and no binding of a member or group; a duplicate, groupless,
   empty-group or non-DNS Organization, an own workspace-manager.organizations and
   workspace-manager.rbac.create false fail the render;
 - inline credentials, a duplicate or non-DNS provider name, a provider without a
@@ -46,7 +48,7 @@ muster. Each case below pins one property of its wiring:
   too) and no value set the release carries kagent.address
   grpc://kagent-controller.kagent.svc:8083 and kagent.namespace kagent
   (kagent.namespaceOverride and kagent.fullnameOverride move both), and the
-  component chart at 0.4.0-rc.1 takes the block; an own address wins and takes
+  component chart at 0.4.0 takes the block; the default floor is 0.4.0; an own address wins and takes
   nothing derived; an own namespace without an address that differs fails
   naming the key; without kagent or below the floor (an earlier release's
   closed schema refuses the block) no kagent block;
@@ -162,13 +164,14 @@ def component_render(hr: str, version: str) -> subprocess.CompletedProcess:
 def component_rbac(hr: str) -> dict:
     """Render the workspace-manager chart, at the BOM's pin, with the values block the
     HelmRelease forwards, and return its RBAC: the Roles and RoleBindings as
-    `namespace/name`, the cluster-wide ones, and the kinds of every binding's subjects."""
+    `namespace/name`, the cluster-wide ones with every ClusterRole's rules, and the kinds of
+    every binding's subjects."""
     with open(BOM, encoding="utf-8") as f:
         pin = re.search(rf'^\s*{re.escape(NAME)}:\s*\{{\s*versionRange:\s*"([^"]+)"', f.read(), re.M).group(1)
     r = component_render(hr, pin)
     if r.returncode != 0:
         fail(f"the {NAME} chart {pin} refuses the forwarded values:\n{r.stderr}")
-    out = {"version": pin, "Role": [], "RoleBinding": [], "ClusterRole": [], "ClusterRoleBinding": [], "subjects": set()}
+    out = {"version": pin, "Role": [], "RoleBinding": [], "ClusterRole": [], "ClusterRoleBinding": [], "clusterRules": [], "subjects": set()}
     for doc in r.stdout.split("\n---\n"):
         kind = re.search(r"^kind: (\S+)", doc, re.M)
         if not kind or kind.group(1) not in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"):
@@ -177,6 +180,10 @@ def component_rbac(hr: str) -> dict:
         ns = re.search(r"^  namespace: (\S+)", doc, re.M)
         if kind.group(1).startswith("Cluster"):
             out[kind.group(1)].append(name)
+            if kind.group(1) == "ClusterRole":
+                out["clusterRules"].append(doc[doc.index("\nrules:\n") + 1:].strip() if "\nrules:\n" in doc else "")
+            else:
+                out["subjects"] |= set(re.findall(r"^  - kind: (\S+)", doc, re.M))
             continue
         if not name.endswith(("-sync", "-signin")):
             out[kind.group(1)].append(f"{ns.group(1) if ns else ''}/{name}")
@@ -329,8 +336,11 @@ def main(meta: str, connectivity: str) -> int:
     rbac = component_rbac(org_hr)
     if rbac["Role"] != [f"kagent/{NAME}"] or rbac["RoleBinding"] != [f"kagent/{NAME}"]:
         fail(f"the component chart's manager RBAC in kagent is not one Role and one RoleBinding named {NAME}: {rbac}")
-    if rbac["ClusterRole"] or rbac["ClusterRoleBinding"]:
-        fail(f"the component chart renders cluster-wide RBAC: {rbac}")
+    volumes = f"{NAME}-volumes"
+    if (rbac["ClusterRole"] != [volumes] or rbac["ClusterRoleBinding"] != [volumes]
+            or rbac["clusterRules"] != ['rules:\n  - apiGroups: [""]\n    resources: [persistentvolumes]\n    verbs: [get]\n'
+                                        '  - apiGroups: [storage.k8s.io]\n    resources: [storageclasses]\n    verbs: [get]']):
+        fail(f"the component chart's cluster-wide RBAC is not the one ClusterRole and binding {volumes} that only gets PersistentVolumes and StorageClasses: {rbac}")
     if rbac["subjects"] - {"ServiceAccount"}:
         fail(f"a binding of the component chart names a subject other than a ServiceAccount (a member, a group): {sorted(rbac['subjects'])}")
     must_fail(meta, [*ON, "-f", ORGS, "--set", "workspaces.organizations[1].name=acme"], "is a duplicate", "a duplicate Organization")
@@ -341,7 +351,7 @@ def main(meta: str, connectivity: str) -> int:
     must_fail(meta, [*ON, "--set", f"{NAME}.rbac.create=false"], f"{NAME}.rbac.create is false", "the manager's RBAC off")
     helm(connectivity, ["--set", "ingress.parentRefs[0].name=x", "--set", f"components.{NAME}.enabled=true", "-f", FIXTURE, "-f", ORGS, *IDENTITY], ci_values=False)
     ok(f"two Organizations forwarded as the organizations map, nothing else moved; the component chart {rbac['version']} renders one Role and RoleBinding "
-       "in kagent for the manager's ServiceAccount, nothing cluster-wide, no member binding; a duplicate, groupless, empty-group or non-DNS "
+       "in kagent for the manager's ServiceAccount, cluster-wide only get on PersistentVolumes and StorageClasses, no member binding; a duplicate, groupless, empty-group or non-DNS "
        "Organization, an own organizations map and rbac.create false fail; connectivity takes the key")
 
     # --- inline credentials and bad instances -----------------------------------------
@@ -369,16 +379,16 @@ def main(meta: str, connectivity: str) -> int:
     # --- the kagent address -------------------------------------------------------------
     if "\n    kagent:\n" in documents(helm(meta, [*ON, *WM_KAGENT, "--set", "components.kagent.enabled=false"]))[("HelmRelease", NAME)]:
         fail("the HelmRelease carries a kagent block with kagent off")
-    if "\n    kagent:\n" in documents(helm(meta, [*ON, *KAGENT]))[("HelmRelease", NAME)]:
+    if "\n    kagent:\n" in documents(helm(meta, [*ON, *KAGENT, "--set", f"components.{NAME}.versionRange=>=0.2.0 <1.0.0"]))[("HelmRelease", NAME)]:
         fail("the HelmRelease carries a kagent block below the workspace-manager floor that takes it (an earlier chart's schema refuses it)")
     want = "    kagent:\n      address: grpc://kagent-controller.kagent.svc:8083\n      namespace: kagent\n"
     for rng in ("0.4.0-rc.1", ">=0.4.0 <1.0.0"):
         hr = documents(helm(meta, [*ON, *KAGENT, *IDENTITY, "--set", f"components.{NAME}.versionRange={rng}"]))[("HelmRelease", NAME)]
         must_have(hr, (want,), f"the HelmRelease with kagent on and the range {rng}")
-    if (r := component_render(hr, "0.4.0-rc.1")).returncode != 0:
-        fail(f"the {NAME} chart 0.4.0-rc.1 refuses the forwarded kagent block:\n{r.stderr}")
+    if (r := component_render(hr, "0.4.0")).returncode != 0:
+        fail(f"the {NAME} chart 0.4.0 refuses the forwarded kagent block:\n{r.stderr}")
     if "grpc://kagent-controller.kagent.svc:8083" not in r.stdout:
-        fail(f"the {NAME} chart 0.4.0-rc.1 renders no kagent address from the forwarded block")
+        fail(f"the {NAME} chart 0.4.0 renders no kagent address from the forwarded block")
     moved = documents(helm(meta, [*ON, *KAGENT, *WM_KAGENT, "--set", "kagent.namespaceOverride=agents", "--set", "kagent.fullnameOverride=kg"]))[("HelmRelease", NAME)]
     must_have(moved, ("    kagent:\n      address: grpc://kg-controller.agents.svc:8083\n      namespace: agents\n",),
               "the HelmRelease with kagent.namespaceOverride and fullnameOverride")
@@ -389,7 +399,7 @@ def main(meta: str, connectivity: str) -> int:
     must_fail(meta, [*ON, *KAGENT, *WM_KAGENT, "--set", f"{NAME}.kagent.namespace=elsewhere"], f"{NAME}.kagent.namespace (elsewhere) differs",
               "an own kagent namespace that disagrees with the derived address")
     ok("kagent.address defaults to kagent's controller Service (grpc://kagent-controller.kagent.svc:8083) with its namespace from "
-       "workspace-manager 0.4.0 on, which takes it (0.4.0-rc.1 renders it), following kagent's namespace and fullname; an own address wins; "
+       "workspace-manager 0.4.0 on, the default floor, which takes it (0.4.0 renders it), following kagent's namespace and fullname; an own address wins; "
        "a disagreeing own namespace fails; none without kagent or below the floor")
 
     # --- the connectivity chart -------------------------------------------------------------
