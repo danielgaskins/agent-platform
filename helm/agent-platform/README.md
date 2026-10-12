@@ -387,13 +387,13 @@ The map is merged into each component's own `nodeSelector` (`muster.nodeSelector
 | components.kagent-crds.ownedCrds[0] | string | `"modelconfigs.api.kagent.dev"` |  |
 | components.substrate-crds.chart | string | `"substrate-crds"` |  |
 | components.substrate-crds.repository | string | `"oci://gsoci.azurecr.io/giantswarm/substrate/helm"` |  |
-| components.substrate-crds.versionRange | string | `">=1.8.2-rc.5 <1.9.0"` |  |
+| components.substrate-crds.versionRange | string | `">=1.8.2 <1.9.0"` |  |
 | components.substrate-crds.valuesFrom | string | `"substrate-crds"` |  |
 | components.substrate-crds.injectGlobal | bool | `false` |  |
 | components.substrate-crds.targetNamespace | string | `"ate-system"` |  |
 | components.substrate.chart | string | `"substrate"` |  |
 | components.substrate.repository | string | `"oci://gsoci.azurecr.io/giantswarm/substrate/helm"` |  |
-| components.substrate.versionRange | string | `">=1.8.2-rc.5 <1.9.0"` |  |
+| components.substrate.versionRange | string | `">=1.8.2 <1.9.0"` |  |
 | components.substrate.valuesFrom | string | `"substrate"` |  |
 | components.substrate.injectGlobal | bool | `false` |  |
 | components.substrate.targetNamespace | string | `"ate-system"` |  |
@@ -404,6 +404,8 @@ The map is merged into each component's own `nodeSelector` (`muster.nodeSelector
 | components.substrate.valuesFromRefs[0].valuesKey | string | `"substrate-values.yaml"` |  |
 | components.substrate.valuesFromRefs[0].optional | bool | `true` |  |
 | components.substrate.omitEmptyKeys[0] | string | `"atelet.imageCache.pinnedImages"` |  |
+| components.substrate.timeout | string | `"15m"` |  |
+| components.substrate.upgradeRemediation.retries | int | `3` |  |
 | components.klaus-gateway.chart | string | `"klaus-gateway"` |  |
 | components.klaus-gateway.repository | string | `"oci://gsoci.azurecr.io/charts/giantswarm"` |  |
 | components.klaus-gateway.versionRange | string | `">=3.3.0 <5.0.0"` |  |

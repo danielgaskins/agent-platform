@@ -875,6 +875,19 @@
                         "targetNamespace": {
                             "type": "string"
                         },
+                        "timeout": {
+                            "type": "string",
+                            "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+                        },
+                        "upgradeRemediation": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "properties": {
+                                "retries": {
+                                    "type": "integer"
+                                }
+                            }
+                        },
                         "valuesFrom": {
                             "type": "string"
                         },
