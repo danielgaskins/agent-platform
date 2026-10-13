@@ -28,16 +28,39 @@ muster. Each case below pins one property of its wiring:
   (verify-workspace-storage covers the class); the keys left empty are not
   forwarded; a signInStore block fails naming signin.keys (the chart's key);
   nothing under muster.* moves (the muster release and the muster block forwarded
-  to connectivity are unchanged) and no MCPServer renders anywhere for the
-  component or a provider;
+  to connectivity are unchanged), nothing else of the render moves but the kagent
+  release's jwt Session admission (tests/verify-workspace-session-admission.py),
+  and no MCPServer renders anywhere for the component or a provider;
+- the Organizations (#886): workspaces.organizations [{name, memberGroups}] reaches
+  the release as the chart's organizations map and moves nothing else; the
+  component chart, rendered at the BOM's pin with the forwarded block, gives the
+  manager's ServiceAccount one Role and RoleBinding in kagent, cluster-wide only
+  `get` on PersistentVolumes (a workspace volume's CSI driver and handle, which
+  the grant names) and StorageClasses (whether the class provisions a size the
+  controller grows) and no binding of a member or group; a duplicate, groupless,
+  empty-group or non-DNS Organization, an own workspace-manager.organizations and
+  workspace-manager.rbac.create false fail the render;
 - inline credentials, a duplicate or non-DNS provider name, a provider without a
-  kind fail the render naming the path; a workspaces.namespace that differs from
+  kind fail the render naming the path; a gitlab instance below the floor
+  agent-platform.workspaceManager.gitlabFloor (0.5.0, a release candidate of it
+  too) fails naming it, the default floor is 0.5.0, and the component chart at
+  the BOM's pin takes the instance; a workspaces.namespace that differs from
   kagent's fails naming the key, kagent.namespaceOverride moves it;
+- the kagent address: with kagent on, the workspace-manager range's floor at
+  agent-platform.workspaceManager.kagentFloor (0.4.0, a release candidate of it
+  too) and no value set the release carries kagent.address
+  grpc://kagent-controller.kagent.svc:8083 and kagent.namespace kagent
+  (kagent.namespaceOverride and kagent.fullnameOverride move both), and the
+  component chart at 0.4.0 takes the block; an own address wins and takes
+  nothing derived; an own namespace without an address that differs fails
+  naming the key; without kagent or below the floor (an earlier release's
+  closed schema refuses the block) no kagent block;
 - the connectivity chart, cilium: the ingress (muster, kagent's controller, the
   kubelet's probes, the metrics port), the egress (DNS with the proxy clause, the
   kube-apiserver, the Dex issuer by name, each provider instance's hosts on their
   ports — github.com and api.github.com for a GitHub instance without url), the
-  muster-to and the kagent-controller-to policies; kubernetes: the same as
+  muster-to, the kagent-controller-to and the workspace-manager-to-kagent-controller
+  policies, the egress to kagent's controller on 8083; kubernetes: the same as
   NetworkPolicy; without kagent no kagent rule or policy;
 - the connectivity guards: muster off with the MCPServer on, a provider of another
   kind without url, a bad CIDR;
@@ -58,6 +81,8 @@ NAME = "workspace-manager"
 REPOSITORY = "oci://gsoci.azurecr.io/charts/giantswarm"
 RANGE_RE = r'semver: "(>=[^"]+ <1\.0\.0)"'
 FIXTURE = "tests/fixtures/workspaces-values.yaml"
+ORGS = "tests/fixtures/workspaces-organizations-values.yaml"
+BOM = "helm/agent-platform/examples/customer-bom.yaml"
 CI = ["--set", "components.flux.enabled=false"]
 ON = ["-f", FIXTURE]
 KAGENT = ["--set", "components.kagent.enabled=true", "--set", "kagent.harness.snapshotLocation=s3://ci/agents"]
@@ -67,6 +92,12 @@ IDENTITY = [
     "--set", "global.identity.clientId=platform",
     "--set", "global.identity.existingSecret=platform-oauth",
 ]
+# The first workspace-manager release whose chart takes kagent.address, with the
+# fixture's second instance as a github one: the gitlab kind needs 0.5.0.
+WM_KAGENT = ["--set", "components.workspace-manager.versionRange=>=0.4.0 <1.0.0"]
+NO_GITLAB = ["--set", "workspace-manager.providers[1].kind=github"]
+# The first workspace-manager release with the provider kind gitlab.
+GITLAB_FLOOR = "0.5.0"
 CREDENTIALS = ("privateKey", "clientSecret", "token", "signingKey")
 
 
@@ -120,6 +151,51 @@ def must_fail(chart: str, flags: list, needle: str, what: str, ci_values: bool =
     err = helm(chart, flags, expect_fail=True, ci_values=ci_values)
     if needle not in err:
         fail(f"{what} failed for another reason (expected {needle!r}):\n{err}")
+
+
+def component_render(hr: str, version: str) -> subprocess.CompletedProcess:
+    """`helm template` of the workspace-manager chart at version with the values block
+    the HelmRelease forwards."""
+    values = block(hr, "values", 2)
+    if not values:
+        fail(f"the HelmRelease carries no values block:\n{hr}")
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(f"{tmp}/values.yaml", "w", encoding="utf-8") as f:
+            f.write("".join(line[4:] + "\n" for line in values.splitlines()[1:]))
+        r = subprocess.run([HELM, "pull", f"{REPOSITORY}/{NAME}", "--version", version, "--untar", "-d", tmp], capture_output=True, text=True)
+        if r.returncode != 0:
+            fail(f"helm pull {NAME} {version}: {r.stderr}")
+        return subprocess.run([HELM, "template", NAME, f"{tmp}/{NAME}", "-n", "default", "-f", f"{tmp}/values.yaml"], capture_output=True, text=True)
+
+
+def component_rbac(hr: str) -> dict:
+    """Render the workspace-manager chart, at the BOM's pin, with the values block the
+    HelmRelease forwards, and return its RBAC: the Roles and RoleBindings as
+    `namespace/name`, the cluster-wide ones with every ClusterRole's rules, and the kinds of
+    every binding's subjects."""
+    with open(BOM, encoding="utf-8") as f:
+        pin = re.search(rf'^\s*{re.escape(NAME)}:\s*\{{\s*versionRange:\s*"([^"]+)"', f.read(), re.M).group(1)
+    r = component_render(hr, pin)
+    if r.returncode != 0:
+        fail(f"the {NAME} chart {pin} refuses the forwarded values:\n{r.stderr}")
+    out = {"version": pin, "Role": [], "RoleBinding": [], "ClusterRole": [], "ClusterRoleBinding": [], "clusterRules": [], "subjects": set()}
+    for doc in r.stdout.split("\n---\n"):
+        kind = re.search(r"^kind: (\S+)", doc, re.M)
+        if not kind or kind.group(1) not in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"):
+            continue
+        name = re.search(r"^  name: (\S+)", doc, re.M).group(1)
+        ns = re.search(r"^  namespace: (\S+)", doc, re.M)
+        if kind.group(1).startswith("Cluster"):
+            out[kind.group(1)].append(name)
+            if kind.group(1) == "ClusterRole":
+                out["clusterRules"].append(doc[doc.index("\nrules:\n") + 1:].strip() if "\nrules:\n" in doc else "")
+            else:
+                out["subjects"] |= set(re.findall(r"^  - kind: (\S+)", doc, re.M))
+            continue
+        if not name.endswith(("-sync", "-signin")):
+            out[kind.group(1)].append(f"{ns.group(1) if ns else ''}/{name}")
+        out["subjects"] |= set(re.findall(r"^  - kind: (\S+)", doc, re.M))
+    return out
 
 
 def golden(meta: str, connectivity: str) -> None:
@@ -218,7 +294,25 @@ def main(meta: str, connectivity: str) -> int:
     if added != {("OCIRepository", NAME), ("HelmRelease", NAME)}:
         fail(f"switching workspaces on added documents other than the component's two: {sorted(added)}")
     for key, doc in off_docs.items():
-        if key != ("HelmRelease", "agent-platform-connectivity") and on_docs.get(key) != doc:
+        if key == ("HelmRelease", "agent-platform-connectivity"):
+            continue
+        on = on_docs.get(key)
+        if key == ("HelmRelease", "kagent"):
+            # The one change the switch makes outside the component: kagent's jwt
+            # Session admission, derived onto the kagent release while the manager
+            # signs grants (tests/verify-workspace-session-admission.py pins its values).
+            session = block(block(on or "", "controller", 4), "session", 6)
+            if not re.search(r"^        admission:\n          jwt:\n", session, re.M):
+                fail(f"switching workspaces on did not derive kagent's Session admission onto {key}:\n{session}")
+            on = on.replace(session, "", 1)
+        if key == ("HelmRelease", "klaus-gateway"):
+            # And the gateway's workspace tools prefix, derived from the
+            # klaus-gateway floor 4.3.0 on (tests/verify-klausgateway-workspaces.py).
+            prefix = "    workspaces:\n      toolsPrefix: x_workspace-manager_\n"
+            if prefix not in (on or ""):
+                fail(f"switching workspaces on did not derive the gateway's workspaces.toolsPrefix onto {key}")
+            on = on.replace(prefix, "", 1)
+        if on != doc:
             fail(f"switching workspaces on changed {key} (muster.* included)")
     if any(kind == "MCPServer" for kind, _ in on_docs):
         fail("the meta chart renders an MCPServer: the registration is the component chart's own")
@@ -237,6 +331,43 @@ def main(meta: str, connectivity: str) -> int:
     helm(connectivity, ["--set", "ingress.parentRefs[0].name=x", "--set", f"components.{NAME}.enabled=true", "-f", lab, *IDENTITY], ci_values=False)
     ok("the switch beside workspaces.storage and workspaces.substrate (the lab's block): both schemas take it, the component renders, connectivity takes the forwarded block")
 
+    # --- the Organizations and the manager's RBAC (#886) --------------------------------------
+    orgs = documents(helm(meta, [*ON, "-f", ORGS, *IDENTITY]))
+    org_hr = orgs[("HelmRelease", NAME)]
+    must_have(org_hr, (
+        "    organizations:\n"
+        "      acme:\n        memberGroups:\n        - acme-ad:developers\n        - acme-ad:sre\n"
+        "      globex:\n        memberGroups:\n        - globex:engineers\n",
+    ), "the HelmRelease with two Organizations")
+    on_id = documents(helm(meta, [*ON, *IDENTITY]))
+    if "organizations:" in on_id[("HelmRelease", NAME)]:
+        fail("the HelmRelease forwards organizations without workspaces.organizations")
+    for key, doc in on_id.items():
+        if key not in {("HelmRelease", NAME), ("HelmRelease", "agent-platform-connectivity")} and orgs.get(key) != doc:
+            fail(f"workspaces.organizations changed {key}")
+    if any(kind in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding") for kind, _ in orgs):
+        fail("the meta chart renders RBAC of its own: the manager's Role and RoleBinding are the component chart's")
+    rbac = component_rbac(org_hr)
+    if rbac["Role"] != [f"kagent/{NAME}"] or rbac["RoleBinding"] != [f"kagent/{NAME}"]:
+        fail(f"the component chart's manager RBAC in kagent is not one Role and one RoleBinding named {NAME}: {rbac}")
+    volumes = f"{NAME}-volumes"
+    if (rbac["ClusterRole"] != [volumes] or rbac["ClusterRoleBinding"] != [volumes]
+            or rbac["clusterRules"] != ['rules:\n  - apiGroups: [""]\n    resources: [persistentvolumes]\n    verbs: [get]\n'
+                                        '  - apiGroups: [storage.k8s.io]\n    resources: [storageclasses]\n    verbs: [get]']):
+        fail(f"the component chart's cluster-wide RBAC is not the one ClusterRole and binding {volumes} that only gets PersistentVolumes and StorageClasses: {rbac}")
+    if rbac["subjects"] - {"ServiceAccount"}:
+        fail(f"a binding of the component chart names a subject other than a ServiceAccount (a member, a group): {sorted(rbac['subjects'])}")
+    must_fail(meta, [*ON, "-f", ORGS, "--set", "workspaces.organizations[1].name=acme"], "is a duplicate", "a duplicate Organization")
+    must_fail(meta, [*ON, "-f", ORGS, "--set-json", "workspaces.organizations[1].memberGroups=[]"], "has no memberGroups", "an empty group list")
+    must_fail(meta, [*ON, "-f", ORGS, "--set-json", 'workspaces.organizations[1].memberGroups=[""]'], "memberGroups[0] is empty", "an empty group")
+    must_fail(meta, [*ON, "-f", ORGS, "--set", "workspaces.organizations[1].name=Glo_bex"], "is not a DNS label", "a non-DNS Organization name")
+    must_fail(meta, [*ON, "--set", f"{NAME}.organizations.acme.memberGroups[0]=g"], f"{NAME}.organizations is set", "an own organizations map")
+    must_fail(meta, [*ON, "--set", f"{NAME}.rbac.create=false"], f"{NAME}.rbac.create is false", "the manager's RBAC off")
+    helm(connectivity, ["--set", "ingress.parentRefs[0].name=x", "--set", f"components.{NAME}.enabled=true", "-f", FIXTURE, "-f", ORGS, *IDENTITY], ci_values=False)
+    ok(f"two Organizations forwarded as the organizations map, nothing else moved; the component chart {rbac['version']} renders one Role and RoleBinding "
+       "in kagent for the manager's ServiceAccount, cluster-wide only get on PersistentVolumes and StorageClasses, no member binding; a duplicate, groupless, empty-group or non-DNS "
+       "Organization, an own organizations map and rbac.create false fail; connectivity takes the key")
+
     # --- inline credentials and bad instances -----------------------------------------
     must_fail(meta, [*ON, "--set", f"{NAME}.providers[0].values.app.privateKey=abc"],
               f"{NAME}.providers[0].values.app.privateKey is a credential", "an inline private key")
@@ -251,6 +382,25 @@ def main(meta: str, connectivity: str) -> int:
     must_fail(meta, [*ON, "--set", f"{NAME}.providers[1].kind="], "names no kind", "a provider without kind")
     ok("an inline credential, a duplicate or non-DNS name and a missing kind fail naming the path")
 
+    # --- the gitlab kind's floor ----------------------------------------------------------
+    if not (rng := re.search(RANGE_RE, on_docs[("OCIRepository", NAME)])) or not rng.group(1).startswith(f">={GITLAB_FLOOR} "):
+        fail(f"the default workspace-manager range is not floored at {GITLAB_FLOOR}, the first release with the gitlab kind")
+    for below in (">=0.4.0 <1.0.0", "0.4.1"):
+        must_fail(meta, [*ON, "--set", f"components.{NAME}.versionRange={below}"],
+                  f"{NAME}.providers[1] (gitlab) is of kind gitlab, which workspace-manager has from {GITLAB_FLOOR} on", f"a gitlab instance on the range {below}")
+    for at in (f"{GITLAB_FLOOR}-rc.1", f">={GITLAB_FLOOR} <1.0.0"):
+        helm(meta, [*ON, "--set", f"components.{NAME}.versionRange={at}"])
+    helm(meta, [*ON, *NO_GITLAB, "--set", f"components.{NAME}.versionRange=>=0.4.0 <1.0.0"])
+    with open(BOM, encoding="utf-8") as f:
+        pin = re.search(rf'^\s*{re.escape(NAME)}:\s*\{{\s*versionRange:\s*"([^"]+)"', f.read(), re.M).group(1)
+    r = component_render(documents(helm(meta, [*ON, *IDENTITY]))[("HelmRelease", NAME)], pin)
+    if r.returncode != 0:
+        fail(f"the {NAME} chart {pin} refuses the forwarded gitlab instance:\n{r.stderr}")
+    must_have(r.stdout, ("kind: gitlab", "name: gitlab", "url: https://gitlab.example.com:8443", "name: workspace-gitlab"),
+              f"the {NAME} chart {pin}'s providers configuration")
+    ok(f"a gitlab instance needs the workspace-manager floor at {GITLAB_FLOOR} (a release candidate of it too; below, the render fails naming "
+       f"the floor; a github-only list does not), the default floor; the component chart at the BOM's pin {pin} takes the instance with its Secret references")
+
     # --- the derived namespace ----------------------------------------------------------
     moved = documents(helm(meta, [*ON, "--set", "kagent.namespaceOverride=agents"]))[("HelmRelease", NAME)]
     must_have(moved, ("    workspaces:\n      namespace: agents\n",), "the HelmRelease with kagent.namespaceOverride")
@@ -259,6 +409,32 @@ def main(meta: str, connectivity: str) -> int:
               "a disagreeing workspaces.namespace")
     ok("workspaces.namespace follows the kagent namespace; an own value must agree")
 
+    # --- the kagent address -------------------------------------------------------------
+    if "\n    kagent:\n" in documents(helm(meta, [*ON, *NO_GITLAB, *WM_KAGENT, "--set", "components.kagent.enabled=false"]))[("HelmRelease", NAME)]:
+        fail("the HelmRelease carries a kagent block with kagent off")
+    if "\n    kagent:\n" in documents(helm(meta, [*ON, *NO_GITLAB, *KAGENT, "--set", f"components.{NAME}.versionRange=>=0.2.0 <1.0.0"]))[("HelmRelease", NAME)]:
+        fail("the HelmRelease carries a kagent block below the workspace-manager floor that takes it (an earlier chart's schema refuses it)")
+    want = "    kagent:\n      address: grpc://kagent-controller.kagent.svc:8083\n      namespace: kagent\n"
+    for rng in ("0.4.0-rc.1", ">=0.4.0 <1.0.0"):
+        hr = documents(helm(meta, [*ON, *NO_GITLAB, *KAGENT, *IDENTITY, "--set", f"components.{NAME}.versionRange={rng}"]))[("HelmRelease", NAME)]
+        must_have(hr, (want,), f"the HelmRelease with kagent on and the range {rng}")
+    if (r := component_render(hr, "0.4.0")).returncode != 0:
+        fail(f"the {NAME} chart 0.4.0 refuses the forwarded kagent block:\n{r.stderr}")
+    if "grpc://kagent-controller.kagent.svc:8083" not in r.stdout:
+        fail(f"the {NAME} chart 0.4.0 renders no kagent address from the forwarded block")
+    moved = documents(helm(meta, [*ON, *NO_GITLAB, *KAGENT, *WM_KAGENT, "--set", "kagent.namespaceOverride=agents", "--set", "kagent.fullnameOverride=kg"]))[("HelmRelease", NAME)]
+    must_have(moved, ("    kagent:\n      address: grpc://kg-controller.agents.svc:8083\n      namespace: agents\n",),
+              "the HelmRelease with kagent.namespaceOverride and fullnameOverride")
+    own = documents(helm(meta, [*ON, *NO_GITLAB, *KAGENT, *WM_KAGENT, "--set", f"{NAME}.kagent.address=grpcs://kagent.example.com",
+                                "--set", f"{NAME}.kagent.namespace=elsewhere"]))[("HelmRelease", NAME)]
+    must_have(own, ("    kagent:\n      address: grpcs://kagent.example.com\n      namespace: elsewhere\n",), "the HelmRelease with an own address")
+    helm(meta, [*ON, *NO_GITLAB, *KAGENT, *WM_KAGENT, "--set", f"{NAME}.kagent.namespace=kagent"])
+    must_fail(meta, [*ON, *NO_GITLAB, *KAGENT, *WM_KAGENT, "--set", f"{NAME}.kagent.namespace=elsewhere"], f"{NAME}.kagent.namespace (elsewhere) differs",
+              "an own kagent namespace that disagrees with the derived address")
+    ok("kagent.address defaults to kagent's controller Service (grpc://kagent-controller.kagent.svc:8083) with its namespace from "
+       "workspace-manager 0.4.0 on, the default floor, which takes it (0.4.0 renders it), following kagent's namespace and fullname; an own address wins; "
+       "a disagreeing own namespace fails; none without kagent or below the floor")
+
     # --- the connectivity chart -------------------------------------------------------------
     conn_on_flags = ["--set", "ingress.parentRefs[0].name=x", "--set", f"components.{NAME}.enabled=true", "-f", FIXTURE, *IDENTITY]
     prefix = "agent-platform-connectivity"
@@ -266,26 +442,37 @@ def main(meta: str, connectivity: str) -> int:
         flags = [*conn_on_flags, "--set", f"networkPolicy.flavor={flavor}", "--set", "components.kagent.enabled=true"]
         docs = documents(helm(connectivity, flags, ci_values=False))
         names = {n for k, n in docs if k == kind and NAME in n}
-        want = {f"{prefix}-{NAME}-ingress", f"{prefix}-{NAME}-egress", f"{prefix}-muster-to-{NAME}", f"{prefix}-kagent-controller-to-{NAME}"}
+        want = {f"{prefix}-{NAME}-ingress", f"{prefix}-{NAME}-egress", f"{prefix}-muster-to-{NAME}", f"{prefix}-kagent-controller-to-{NAME}",
+                f"{prefix}-{NAME}-to-kagent-controller"}
         if names != want:
             fail(f"{flavor}: the policies for {NAME} are {sorted(names)}, expected {sorted(want)}")
         ingress = docs[(kind, f"{prefix}-{NAME}-ingress")]
         egress = docs[(kind, f"{prefix}-{NAME}-egress")]
         kc = docs[(kind, f"{prefix}-kagent-controller-to-{NAME}")]
         must_have(kc, ("  namespace: kagent\n",), f"{flavor}: the kagent controller's egress")
+        to_kc = docs[(kind, f"{prefix}-{NAME}-to-kagent-controller")]
+        must_have(to_kc, ("  namespace: kagent\n", "app.kubernetes.io/component: controller\n", f"app.kubernetes.io/name: {NAME}\n"),
+                  f"{flavor}: the kagent controller's ingress from the manager")
         if flavor == "cilium":
             must_have(ingress, ("app.kubernetes.io/name: muster\n", "app.kubernetes.io/name: kagent\n",
                                 "io.kubernetes.pod.namespace: kagent\n", "- host\n", 'port: "9464"\n'), "cilium ingress")
             must_have(egress, ("- kube-apiserver\n", "matchName: dex.ci.example.com\n",
+                               "app.kubernetes.io/component: controller\n            app.kubernetes.io/name: kagent\n"
+                               "            io.kubernetes.pod.namespace: kagent\n      toPorts:\n        - ports:\n            - port: \"8083\"\n",
                                '- matchName: "github.com"\n        - matchName: "api.github.com"\n',
                                '- matchName: "gitlab.example.com"\n', 'port: "8443"\n', "dns:\n"), "cilium egress")
         else:
             must_have(ingress, ("app.kubernetes.io/name: muster\n", "kubernetes.io/metadata.name: kagent\n"), "kubernetes ingress")
-            must_have(egress, ("cidr: 0.0.0.0/0\n", "- port: 443\n", "- port: 8443\n", "port: 53\n"), "kubernetes egress")
+            must_have(egress, ("cidr: 0.0.0.0/0\n", "- port: 443\n", "- port: 8443\n", "port: 53\n",
+                               "kubernetes.io/metadata.name: kagent\n          podSelector:\n            matchLabels:\n"
+                               "              app.kubernetes.io/component: controller\n              app.kubernetes.io/name: kagent\n"
+                               "      ports:\n        - port: 8083\n"), "kubernetes egress")
         if any(k == "MCPServer" for k, _ in docs):
             fail(f"{flavor}: the connectivity chart renders an MCPServer; the registration is the component chart's own")
         no_kagent = documents(helm(connectivity, [*conn_on_flags, "--set", f"networkPolicy.flavor={flavor}"], ci_values=False))
-        if (kind, f"{prefix}-kagent-controller-to-{NAME}") in no_kagent or "app.kubernetes.io/name: kagent\n" in no_kagent[(kind, f"{prefix}-{NAME}-ingress")]:
+        if (kind, f"{prefix}-kagent-controller-to-{NAME}") in no_kagent or (kind, f"{prefix}-{NAME}-to-kagent-controller") in no_kagent \
+                or "app.kubernetes.io/name: kagent\n" in no_kagent[(kind, f"{prefix}-{NAME}-ingress")] \
+                or "app.kubernetes.io/name: kagent\n" in no_kagent[(kind, f"{prefix}-{NAME}-egress")]:
             fail(f"{flavor}: a kagent rule renders with kagent off")
     narrowed = documents(helm(connectivity, [*conn_on_flags, "--set", "networkPolicy.flavor=kubernetes",
                                              "--set", "workspaceManager.networkPolicy.egress.cidrs[0]=198.51.100.0/24"], ci_values=False))
@@ -293,7 +480,8 @@ def main(meta: str, connectivity: str) -> int:
     if "except:" in narrowed_egress or 'cidr: "198.51.100.0/24"\n      ports:\n        - port: 443\n          protocol: TCP\n        - port: 8443\n' not in narrowed_egress:
         fail("kubernetes: workspaceManager.networkPolicy.egress.cidrs does not narrow the providers' egress")
     ok("connectivity: ingress (muster, kagent's controller, probes, metrics), egress (DNS, kube-apiserver, the issuer, "
-       "every provider instance's hosts on their ports), muster-to and kagent-controller-to policies in both flavors; none of kagent's without it; cidrs narrow")
+       "every provider instance's hosts on their ports, kagent's controller on 8083), muster-to, kagent-controller-to and "
+       "workspace-manager-to-kagent-controller policies in both flavors; none of kagent's without it; cidrs narrow")
 
     must_fail(connectivity, [*conn_on_flags, "--set", "components.muster.enabled=false"], "components.muster.enabled is false",
               "muster off with the MCPServer on", ci_values=False)

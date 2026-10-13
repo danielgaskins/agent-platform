@@ -407,7 +407,7 @@ spec:
         image:
           registry: gsoci.azurecr.io
           repository: giantswarm/agent-manager
-          tag: 1.10.0
+          tag: 1.13.0
       networkPolicy:
         egress:
           cidrs: []
@@ -460,7 +460,7 @@ spec:
         image:
           registry: gsoci.azurecr.io
           repository: giantswarm/agentgateway-upstream/controller
-          tag: 2.3.3
+          tag: 2.3.5
         replicaCount: 2
       fullnameOverride: agentgateway-controller
       image:
@@ -491,7 +491,7 @@ spec:
         image:
           registry: gsoci.azurecr.io
           repository: giantswarm/agentgateway-upstream/agentgateway
-          tag: 2.3.3
+          tag: 2.3.5
       resources:
         limits:
           cpu: 500m
@@ -1164,6 +1164,7 @@ spec:
         app-armor: restrict-apparmor-profiles
         check-seccomp: restrict-seccomp
         check-seccomp-strict: restrict-seccomp-strict
+        host-namespaces: disallow-host-namespaces
         host-path: disallow-host-path
         host-ports-none: disallow-host-ports
         privilege-escalation: disallow-privilege-escalation
@@ -1187,6 +1188,7 @@ spec:
         listener:
           name: llm-external
           port: 8082
+        rateLimits: []
       listener:
         name: llm
         port: 8081
@@ -1202,6 +1204,7 @@ spec:
         match: claude-*
         name: anthropic
         provider: Anthropic
+      rateLimits: []
     mcp-kubernetes:
       fullnameOverride: mcp-kubernetes
       grafanaDashboards:
@@ -1518,6 +1521,7 @@ spec:
       imagePullSecrets: []
       instances: 3
       namespace: kagent
+      primaryUpdateMethod: switchover
       resources:
         limits:
           cpu: "1"
@@ -1711,7 +1715,7 @@ spec:
       image:
         registry: gsoci.azurecr.io
         repository: giantswarm/agentgateway-upstream/controller
-        tag: 2.3.3
+        tag: 2.3.5
       replicaCount: 2
     fullnameOverride: agentgateway-controller
     global:
@@ -1764,7 +1768,7 @@ spec:
       image:
         registry: gsoci.azurecr.io
         repository: giantswarm/agentgateway-upstream/agentgateway
-        tag: 2.3.3
+        tag: 2.3.5
     resources:
       limits:
         cpu: 500m
@@ -2266,7 +2270,7 @@ spec:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
     operation: copy
   ref:
-    semver: ">=2.4.0 <3.0.0"
+    semver: ">=2.8.0 <3.0.0"
 ---
 # Source: agent-platform/templates/components.yaml
 apiVersion: source.toolkit.fluxcd.io/v1

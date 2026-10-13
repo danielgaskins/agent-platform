@@ -37,6 +37,17 @@ helm.sh/chart: {{ include "chart" . | quote }}
 {{- end -}}
 
 {{/*
+The common labels of a pod template: labels.common without helm.sh/chart and
+app.kubernetes.io/version. Both change with every chart release; in a pod
+template they rolled the workload on every release although nothing of it
+changed, so they stay on the objects' own metadata. A workload merges its
+selector labels over these.
+*/}}
+{{- define "labels.podTemplate" -}}
+{{- omit (include "labels.common" . | fromYaml) "helm.sh/chart" "app.kubernetes.io/version" | toYaml -}}
+{{- end -}}
+
+{{/*
 Selector labels
 */}}
 {{- define "labels.selector" -}}
@@ -771,6 +782,23 @@ The public hostname of the external LLM endpoint: <llmRouting.external.hostPrefi
 */}}
 {{- define "agent-platform.llmRouting.externalHost" -}}
 {{- include "agent-platform.hostname" (dict "ctx" . "prefix" .Values.llmRouting.external.hostPrefix "override" "" "key" "llmRouting.external.hostPrefix") -}}
+{{- end -}}
+
+{{/*
+A rate-limit list (dict "root" . "limits" <list>) as YAML, each entry's key
+rendered through tpl so it may name the chart's own predicates
+(agent-platform.substrate.egressCall).
+*/}}
+{{- define "agent-platform.llmRouting.rateLimits" -}}
+{{- $out := list -}}
+{{- range .limits -}}
+{{- $entry := deepCopy . -}}
+{{- with $entry.key -}}
+{{- $_ := set $entry "key" (tpl . $.root) -}}
+{{- end -}}
+{{- $out = append $out $entry -}}
+{{- end -}}
+{{- toYaml $out -}}
 {{- end -}}
 
 {{/*

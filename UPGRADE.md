@@ -15,6 +15,75 @@ Every component ships its own CRDs and upgrades them with its release; there is 
 
 A CRD version change that needs more than an apply (a stored version dropped, as with kagent's `v1alpha2`) has its own entry below, with the hook that does it.
 
+## 4.127.x → \<next\> (klaus-gateway 4.3.0: Slack Sessions start through start_session)
+
+`components.klaus-gateway.versionRange` selects klaus-gateway from 4.3.0. The gateway starts every thread's Session through agent-manager's `start_session` as the person, without a message (giantswarm/klaus-gateway#446), and needs agent-manager 1.13.0, the floor of the entry below; a thread already bound keeps its Session and conversation. With `workspaces.enabled` the meta chart derives `klausGateway.workspaces.toolsPrefix` onto the release. The gateway keeps its link and routing stores as they are: the release rolls in place.
+
+### Operator action
+
+- **None.**
+- **An installation that pins the BOM**: move `klaus-gateway` to `4.3.0` together with `agent-manager` `1.13.0`.
+
+## 4.127.x → \<next\> (agent-manager 1.13.0: start_session without a first message)
+
+`components.agent-manager.versionRange` selects agent-manager from 1.13.0, and the connectivity release's `agent-manager migrate` run takes the same image. `start_session`'s `message` is optional (giantswarm/agent-manager#138): without it agent-manager creates the Session and answers it without a turn, and the caller sends the first message itself; with it the call behaves as before. The MCP endpoint refuses a request body over 1 MiB, the bound the REST API already applies (giantswarm/agent-manager#141). The portal and the gateway start every Session through `start_session` and rely on the create-only form. The agent-manager chart takes no new value, and agent-manager keeps no state of its own: the release rolls in place, and the agents, their Sessions and their conversations stay as they are.
+
+### Operator action
+
+- **None.**
+- **An installation that pins the BOM**: move `agent-manager` to `1.13.0`.
+
+## 4.127.x → \<next\> (agent-manager 1.12.0: start_session in a workspace)
+
+`components.agent-manager.versionRange` selects agent-manager from 1.12.0 (giantswarm/agent-manager#134), and the connectivity release's `agent-manager migrate` run takes the same image. `start_session` takes a workspace grant and starts the Session in the workspace's volume; without one it starts the Session as before. The agent-manager chart takes no new value, and agent-manager keeps no state of its own: the release rolls in place, and the agents, their Sessions and their conversations stay as they are.
+
+### Operator action
+
+- **None.**
+- **An installation that pins the BOM**: move `agent-manager` to `1.12.0`.
+
+## 4.127.x → \<next\> (kagent 1.10.0: Sessions set up on workspace volumes)
+
+`components.kagent{,-crds}.versionRange` selects kagent 1.10 from 1.10.0 (giantswarm/agent-platform#950). The kagent CRDs, the database schema and the Substrate contract are unchanged from 1.8: the controller, UI and Harness images roll in place, every AgentTemplate re-snapshots once on the new Harness image, and a suspended Session resumes with its conversation and its files. From 1.10.0 a Session on a workspace volume works in its own session directory with the turn's repositories cloned from the volume's mirrors, and the agent can clone any mirror itself.
+
+### Operator action
+
+- **None.** No reset and no migration step.
+- **An installation that pins the BOM**: move `kagent` and `kagent-crds` to `1.10.0`.
+
+## 4.127.x → \<next\> (Substrate 1.8.2: snapshots migrate on the roll)
+
+`components.substrate{,-crds}.versionRange` selects Substrate 1.8 from 1.8.2 (giantswarm/agent-platform#918, giantswarm/substrate#292). The Substrate control plane, the atelet and the kagent WorkerPool roll in place to 1.8.2 (`ateom-gvisor:1.8.2`); the kagent CRDs and the kagent release are unchanged. Substrate 1.8 lays a snapshot out as one tar per container and one per durable volume (giantswarm/substrate#260), and from 1.8.1 the line migrates what 1.7 wrote by itself:
+
+- **Each actor's durable snapshot in the 1.7 layout is converted on its first resume** (giantswarm/substrate#277): a suspended agent resumes with its conversation and its volumes.
+- **Every ActorTemplate's golden written in the old layout is re-taken on the new workers** (giantswarm/substrate#282). A new conversation created while its golden is re-taken answers `Unavailable` and succeeds on retry.
+- **A golden take or a session resume a rolling worker pool interrupts is retried** (giantswarm/substrate#294, giantswarm/substrate#297): a take that meets a draining worker, an atelet without an IP, a missing ateom socket or a cancelled wakeup probe is taken again instead of ending in a terminal `GoldenActorCrashed`, and a terminal golden error an installation on 1.8.1 recorded is cleared when 1.8.2 starts, so its goldens are re-taken on the step as well. A resume Substrate refuses up front while no worker is free is retried by kagent only from the release that carries giantswarm/kagent-upstream#412.
+
+1.8 also brings the egress gateway's Google access token provider, which a Vertex AI agent on the Substrate runtime needs (giantswarm/substrate#250), and the egress gateway's bounded ephemeral storage: the chart renders the bound itself, so the substrate HelmRelease's postRenderer patch is gone.
+
+### Operator action
+
+- **None.** No snapshot reset and no manual step: the conversion and the re-take run on the roll.
+- **An installation that pins the BOM**: move `substrate` and `substrate-crds` to `1.8.2`, never `1.8.0`, which refuses a 1.7 snapshot on restore and re-takes no golden, nor `1.8.1`, whose golden take a worker drain ends for good; `kagent` and `kagent-crds` move to `1.10.0` with the kagent entry above.
+
+## 4.127.x → \<next\> (the workspace grant signing key)
+
+giantswarm/agent-platform#935: with `workspaces.enabled`, provider instances and `oauth.enabled`, the connectivity release creates its own grant signing key Secret, `workspaceManager.grantKey.secretName` (`workspace-manager-grant-keys`) with the entry `workspaceManager.grantKey.key` (`key-1`), kept across upgrades and on uninstall, and the meta chart names it in `workspace-manager.grant.signingKey` for the manager, which then serves `authorize_workspace` and its key set. An installation that references a Secret of its own there keeps it: the release creates nothing for a reference to another Secret than its own, and never replaces a Secret it does not own (giantswarm/agent-platform#944).
+
+### Operator action
+
+- **None.** A `workspace-manager.grant.signingKey` of the installation's own stays as set and its Secret untouched; an installation that set none gets the release's Secret and reference on the upgrade, and the manager starts signing grants with it. `workspaceManager.grantKey.create: false` leaves both the Secret and the reference to the installation.
+
+## 4.126.x → \<next\> (Substrate follows `gitops.prereleases`)
+
+giantswarm/agent-platform#795: `components.substrate{,-crds}` no longer set `prereleases: false`. From Substrate 1.4.0 on, ate-controller runs every gVisor pool on the ateom-gvisor of its own release (`ateController.gvisorWorker.followRelease`, on by default; giantswarm/substrate#114), so a release candidate's atelet and worker are one build. That was the reason for the opt-out (giantswarm/agent-platform#796). An installation on stable releases renders byte for byte as before.
+
+### Operator action
+
+- **None** on stable releases.
+- **Uninstalling the kagent release deletes the platform Harness** (giantswarm/agent-platform#925). From kagent 1.8.1 on, which `>=1.8.0 <1.9.0` resolves to, the chart renders its Harness without `helm.sh/resource-policy: keep` (giantswarm/kagent-upstream#371), and the keep stays on the CRDs only. The kept Agents stay, but nothing runs them until a reinstall renders the Harness again. They name it by `spec.harnessRef`, so they run again untouched. A Harness deleted by hand still comes back on the release's next reconcile.
+- **An installation with `gitops.prereleases: true`**: its Substrate control plane and workers now follow the line's release candidates within `>=1.7.0 <1.8.0`, as its other components already do. To keep Substrate on stable releases, set `components.substrate.prereleases: false` and `components.substrate-crds.prereleases: false`.
+
 ## 4.125.x → \<next\> (kagent 1.8.0)
 
 `components.kagent{,-crds}.versionRange` selects kagent 1.8 from 1.8.0; `components.substrate{,-crds}.versionRange` stays on Substrate 1.7, the release kagent 1.8.0 is built against. The release installs over 1.7.0 in place: the kagent CRDs are unchanged, the Substrate control plane and the kagent WorkerPool stay on `ateom-gvisor:1.7.0`, the controller and UI roll to 1.8.0 and every AgentTemplate re-snapshots once on the new Harness image. A Session's egress policy no longer carries the template's artifact credentials: a skill or plugin source's credential reaches its host on the golden boot's fetch only.
